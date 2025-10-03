@@ -1,11 +1,13 @@
 package mcp
 
 import (
+	"strconv"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/suite"
 	"k8s.io/client-go/rest"
+	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	v1 "k8s.io/client-go/tools/clientcmd/api/v1"
 	"sigs.k8s.io/yaml"
 
@@ -22,7 +24,31 @@ func (s *ConfigurationSuite) SetupTest() {
 	// Use mock server for predictable kubeconfig content
 	mockServer := test.NewMockServer()
 	s.T().Cleanup(mockServer.Close)
-	s.Cfg.KubeConfig = mockServer.KubeconfigFile(s.T())
+	kubeconfig := mockServer.Kubeconfig()
+	for i := 0; i < 10; i++ {
+		// Add multiple fake contexts to force configuration_contexts_list tool to appear
+		kubeconfig.Contexts[strconv.Itoa(i)] = clientcmdapi.NewContext()
+	}
+	s.Cfg.KubeConfig = test.KubeconfigFile(s.T(), kubeconfig)
+}
+
+func (s *ConfigurationSuite) TestContextsList() {
+	s.InitMcpClient()
+	s.Run("configuration_contexts_list", func() {
+		toolResult, err := s.CallTool("configuration_contexts_list", map[string]interface{}{})
+		s.Run("returns contexts", func() {
+			s.Nilf(err, "call tool failed %v", err)
+		})
+		s.Require().NotNil(toolResult, "Expected tool result from call")
+		s.Lenf(toolResult.Content, 1, "invalid tool result content length %v", len(toolResult.Content))
+		s.Run("contains context count", func() {
+			s.Regexpf(`^Available Kubernetes contexts \(12 total`, toolResult.Content[0].(mcp.TextContent).Text, "invalid tool count result content %v", toolResult.Content[0].(mcp.TextContent).Text)
+		})
+		s.Run("contains default context name", func() {
+			s.Regexpf(`^Available Kubernetes contexts \(\d+ total, default: fake-context\)`, toolResult.Content[0].(mcp.TextContent).Text, "invalid tool context default result content %v", toolResult.Content[0].(mcp.TextContent).Text)
+			s.Regexpf(`(?m)^\*fake-context$`, toolResult.Content[0].(mcp.TextContent).Text, "invalid tool context default result content %v", toolResult.Content[0].(mcp.TextContent).Text)
+		})
+	})
 }
 
 func (s *ConfigurationSuite) TestConfigurationView() {
@@ -70,11 +96,11 @@ func (s *ConfigurationSuite) TestConfigurationView() {
 			s.Nilf(err, "invalid tool result content %v", err)
 		})
 		s.Run("returns additional context info", func() {
-			s.Lenf(decoded.Contexts, 2, "invalid context count, expected 2, got %v", len(decoded.Contexts))
-			s.Equalf("additional-context", decoded.Contexts[0].Name, "additional-context not found: %v", decoded.Contexts)
-			s.Equalf("additional-cluster", decoded.Contexts[0].Context.Cluster, "additional-cluster not found: %v", decoded.Contexts)
-			s.Equalf("additional-auth", decoded.Contexts[0].Context.AuthInfo, "additional-auth not found: %v", decoded.Contexts)
-			s.Equalf("fake-context", decoded.Contexts[1].Name, "fake-context not found: %v", decoded.Contexts)
+			s.Lenf(decoded.Contexts, 12, "invalid context count, expected 12, got %v", len(decoded.Contexts))
+			s.Equalf("additional-context", decoded.Contexts[10].Name, "additional-context not found: %v", decoded.Contexts)
+			s.Equalf("additional-cluster", decoded.Contexts[10].Context.Cluster, "additional-cluster not found: %v", decoded.Contexts)
+			s.Equalf("additional-auth", decoded.Contexts[10].Context.AuthInfo, "additional-auth not found: %v", decoded.Contexts)
+			s.Equalf("fake-context", decoded.Contexts[11].Name, "fake-context not found: %v", decoded.Contexts)
 		})
 		s.Run("returns cluster info", func() {
 			s.Lenf(decoded.Clusters, 2, "invalid cluster count, expected 2, got %v", len(decoded.Clusters))
@@ -109,11 +135,11 @@ func (s *ConfigurationSuite) TestConfigurationViewInCluster() {
 			s.Nilf(err, "invalid tool result content %v", err)
 		})
 		s.Run("returns current-context", func() {
-			s.Equalf("context", decoded.CurrentContext, "context not found: %v", decoded.CurrentContext)
+			s.Equalf("in-cluster", decoded.CurrentContext, "context not found: %v", decoded.CurrentContext)
 		})
 		s.Run("returns context info", func() {
 			s.Lenf(decoded.Contexts, 1, "invalid context count, expected 1, got %v", len(decoded.Contexts))
-			s.Equalf("context", decoded.Contexts[0].Name, "context not found: %v", decoded.Contexts)
+			s.Equalf("in-cluster", decoded.Contexts[0].Name, "context not found: %v", decoded.Contexts)
 			s.Equalf("cluster", decoded.Contexts[0].Context.Cluster, "cluster not found: %v", decoded.Contexts)
 			s.Equalf("user", decoded.Contexts[0].Context.AuthInfo, "user not found: %v", decoded.Contexts)
 		})
