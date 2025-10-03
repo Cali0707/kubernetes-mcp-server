@@ -12,43 +12,51 @@ import (
 
 func initConfiguration() []api.ServerTool {
 	tools := []api.ServerTool{
-		{Tool: api.Tool{
-			Name:        "configuration_contexts_list",
-			Description: "List all available context names from the kubeconfig file",
-			InputSchema: &jsonschema.Schema{
-				Type: "object",
-			},
-			Annotations: api.ToolAnnotations{
-				Title:           "Configuration: Contexts List",
-				ReadOnlyHint:    ptr.To(true),
-				DestructiveHint: ptr.To(false),
-				IdempotentHint:  ptr.To(true),
-				OpenWorldHint:   ptr.To(false),
-			},
-		}, Handler: contextsList},
-		{Tool: api.Tool{
-			Name:        "configuration_view",
-			Description: "Get the current Kubernetes configuration content as a kubeconfig YAML",
-			InputSchema: &jsonschema.Schema{
-				Type: "object",
-				Properties: map[string]*jsonschema.Schema{
-					"minified": {
-						Type: "boolean",
-						Description: "Return a minified version of the configuration. " +
-							"If set to true, keeps only the current-context and the relevant pieces of the configuration for that context. " +
-							"If set to false, all contexts, clusters, auth-infos, and users are returned in the configuration. " +
-							"(Optional, default true)",
-					},
+		{
+			Tool: api.Tool{
+				Name:        "configuration_contexts_list",
+				Description: "List all available context names from the kubeconfig file",
+				InputSchema: &jsonschema.Schema{
+					Type: "object",
+				},
+				Annotations: api.ToolAnnotations{
+					Title:           "Configuration: Contexts List",
+					ReadOnlyHint:    ptr.To(true),
+					DestructiveHint: ptr.To(false),
+					IdempotentHint:  ptr.To(true),
+					OpenWorldHint:   ptr.To(false),
 				},
 			},
-			Annotations: api.ToolAnnotations{
-				Title:           "Configuration: View",
-				ReadOnlyHint:    ptr.To(true),
-				DestructiveHint: ptr.To(false),
-				IdempotentHint:  ptr.To(false),
-				OpenWorldHint:   ptr.To(true),
+			ClusterAware: ptr.To(false),
+			Handler:      contextsList,
+		},
+		{
+			Tool: api.Tool{
+				Name:        "configuration_view",
+				Description: "Get the current Kubernetes configuration content as a kubeconfig YAML",
+				InputSchema: &jsonschema.Schema{
+					Type: "object",
+					Properties: map[string]*jsonschema.Schema{
+						"minified": {
+							Type: "boolean",
+							Description: "Return a minified version of the configuration. " +
+								"If set to true, keeps only the current-context and the relevant pieces of the configuration for that context. " +
+								"If set to false, all contexts, clusters, auth-infos, and users are returned in the configuration. " +
+								"(Optional, default true)",
+						},
+					},
+				},
+				Annotations: api.ToolAnnotations{
+					Title:           "Configuration: View",
+					ReadOnlyHint:    ptr.To(true),
+					DestructiveHint: ptr.To(false),
+					IdempotentHint:  ptr.To(false),
+					OpenWorldHint:   ptr.To(true),
+				},
 			},
-		}, Handler: configurationView},
+			ClusterAware: ptr.To(false),
+			Handler:      configurationView,
+		},
 	}
 	return tools
 }

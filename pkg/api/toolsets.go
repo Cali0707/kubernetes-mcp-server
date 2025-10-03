@@ -10,8 +10,19 @@ import (
 )
 
 type ServerTool struct {
-	Tool    Tool
-	Handler ToolHandlerFunc
+	Tool         Tool
+	Handler      ToolHandlerFunc
+	ClusterAware *bool `json:"-"`
+}
+
+// IsClusterAware indicates whether the tool can accept a "cluster" or "context" parameter
+// to operate on a specific Kubernetes cluster context.
+func (s *ServerTool) IsClusterAware() bool {
+	if s.ClusterAware != nil {
+		return *s.ClusterAware
+	}
+	// Default to true if not explicitly set
+	return true
 }
 
 type Toolset interface {
