@@ -143,9 +143,7 @@ func (s *ToolsetsSuite) TestInputSchemaEdgeCases() {
 		}
 		s.Require().NotNil(namespacesList, "Expected namespaces_list from ListTools")
 		s.NotNil(namespacesList.InputSchema.Properties, "Expected namespaces_list.InputSchema.Properties not to be nil")
-		// With multiple clusters available, namespaces_list should have a context parameter
-		_, exists := namespacesList.InputSchema.Properties["context"]
-		s.True(exists, "Expected context property to exist when multiple clusters are available")
+		s.Empty(namespacesList.InputSchema.Properties, "Expected namespaces_list.InputSchema.Properties to be empty")
 	})
 }
 
