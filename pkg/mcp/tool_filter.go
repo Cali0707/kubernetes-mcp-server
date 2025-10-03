@@ -21,14 +21,14 @@ func CompositeFilter(filters ...ToolFilter) ToolFilter {
 
 func ShouldIncludeTargetListTool(targetName string, targets []string) ToolFilter {
 	return func(tool api.ServerTool) bool {
-		if tool.Tool.Name == "contexts_list" {
+		if tool.Tool.Name == "configuration_contexts_list" {
 			if targetName != kubernetes.KubeConfigTargetParameterName {
-				// let's not include contexts_list if we aren't targetting contexts in our ManagerProvider
+				// let's not include configuration_contexts_list if we aren't targeting contexts in our ManagerProvider
 				return false
 			}
 
 			if len(targets) <= maxTargetsInEnum {
-				// all targets in enum, no need for contexts_list tool
+				// all targets in enum, no need for configuration_contexts_list tool
 				return false
 			}
 		}

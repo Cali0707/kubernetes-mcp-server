@@ -132,7 +132,7 @@ func (s *Server) reloadKubernetesClusterProvider() error {
 		p.GetDefaultTarget(),
 		p.GetTargetParameterName(),
 		targets,
-		[]string{"configuration_view", "contexts_list"}, // TODO: see which tools (if any) do not need the cluster parameter
+		[]string{"configuration_view", "configuration_contexts_list"}, // TODO: see which tools (if any) do not need the cluster parameter
 	)
 
 	applicableTools := make([]api.ServerTool, 0)

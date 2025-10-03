@@ -13,13 +13,13 @@ import (
 func initConfiguration() []api.ServerTool {
 	tools := []api.ServerTool{
 		{Tool: api.Tool{
-			Name:        "contexts_list",
-			Description: "List all available contexts from the kubeconfig file. Shows context names for all available contexts",
+			Name:        "configuration_contexts_list",
+			Description: "List all available context names from the kubeconfig file",
 			InputSchema: &jsonschema.Schema{
 				Type: "object",
 			},
 			Annotations: api.ToolAnnotations{
-				Title:           "Contexts: List",
+				Title:           "Configuration: Contexts List",
 				ReadOnlyHint:    ptr.To(true),
 				DestructiveHint: ptr.To(false),
 				IdempotentHint:  ptr.To(true),
