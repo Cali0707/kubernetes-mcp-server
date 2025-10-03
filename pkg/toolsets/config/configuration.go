@@ -27,8 +27,9 @@ func initConfiguration() []api.ServerTool {
 					OpenWorldHint:   ptr.To(false),
 				},
 			},
-			ClusterAware: ptr.To(false),
-			Handler:      contextsList,
+			ClusterAware:       ptr.To(false),
+			TargetListProvider: ptr.To(true),
+			Handler:            contextsList,
 		},
 		{
 			Tool: api.Tool{
