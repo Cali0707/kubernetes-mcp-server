@@ -1,0 +1,259 @@
+name: Gevals MCP Evaluation
+
+on:
+  # Weekly schedule - runs every Monday at 9 AM UTC
+  schedule:
+    - cron: '0 9 * * 1'
+
+  # Manual trigger via PR comments
+  issue_comment:
+    types: [created]
+
+  # Allow manual workflow dispatch for testing
+  workflow_dispatch:
+    inputs:
+      task-filter:
+        description: 'Regular expression to filter tasks (optional)'
+        required: false
+        default: ''
+      verbose:
+        description: 'Enable verbose output'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  # Only run once for latest commit per ref and cancel other (previous) runs.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: 1.25
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # Check if workflow should run based on trigger
+  check-trigger:
+    name: Check if evaluation should run
+    runs-on: ubuntu-latest
+    # Only run on PR comments in the main repository
+    if: |
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request &&
+       contains(github.event.comment.body, '/run-gevals'))
+    outputs:
+      should-run: ${{ steps.check.outputs.should-run }}
+      pr-number: ${{ steps.check.outputs.pr-number }}
+    steps:
+      - name: Check trigger conditions
+        id: check
+        run: |
+          if [[ "${{ github.event_name }}" == "issue_comment" ]]; then
+            # Check if commenter is a maintainer (has write access)
+            PERMISSION=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/collaborators/${{ github.event.comment.user.login }}/permission" \
+              | jq -r '.permission')
+
+            if [[ "$PERMISSION" == "admin" || "$PERMISSION" == "write" ]]; then
+              echo "should-run=true" >> $GITHUB_OUTPUT
+              echo "pr-number=${{ github.event.issue.number }}" >> $GITHUB_OUTPUT
+            else
+              echo "should-run=false" >> $GITHUB_OUTPUT
+              echo "User ${{ github.event.comment.user.login }} does not have permission to trigger evaluations"
+            fi
+          else
+            echo "should-run=true" >> $GITHUB_OUTPUT
+          fi
+
+  # Setup local Kind cluster for testing
+  setup-cluster:
+    name: Setup Kind cluster
+    needs: check-trigger
+    if: needs.check-trigger.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Checkout PR branch if triggered by comment
+          ref: ${{ github.event_name == 'issue_comment' && format('refs/pull/{0}/head', needs.check-trigger.outputs.pr-number) || github.ref }}
+
+      - name: Setup Kind
+        run: |
+          # Install Kind if not already available
+          if ! command -v kind &> /dev/null; then
+            curl -Lo ./kind https://kind.sigs.k8s.io/dl/latest/kind-linux-amd64
+            chmod +x ./kind
+            sudo mv ./kind /usr/local/bin/kind
+          fi
+
+          # Create Kind cluster
+          kind create cluster --name mcp-eval-cluster --wait 5m
+
+      - name: Verify cluster
+        run: |
+          kubectl cluster-info
+          kubectl get nodes
+
+      # Keep cluster info for next job
+      - name: Save kubeconfig
+        run: |
+          mkdir -p ${{ runner.temp }}/kubeconfig
+          kind get kubeconfig --name mcp-eval-cluster > ${{ runner.temp }}/kubeconfig/config
+
+      - name: Upload kubeconfig
+        uses: actions/upload-artifact@v4
+        with:
+          name: kubeconfig
+          path: ${{ runner.temp }}/kubeconfig/config
+          retention-days: 1
+
+  # Run gevals evaluation
+  run-evaluation:
+    name: Run MCP Evaluation
+    needs: [check-trigger, setup-cluster]
+    if: needs.check-trigger.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Checkout PR branch if triggered by comment
+          ref: ${{ github.event_name == 'issue_comment' && format('refs/pull/{0}/head', needs.check-trigger.outputs.pr-number) || github.ref }}
+
+      - name: Download kubeconfig
+        uses: actions/download-artifact@v4
+        with:
+          name: kubeconfig
+          path: ${{ runner.temp }}/kubeconfig
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Build MCP server
+        run: make build
+
+      - name: Start MCP server
+        run: |
+          export KUBECONFIG=${{ runner.temp }}/kubeconfig/config
+          # Start MCP server in background
+          ./kubernetes-mcp-server --http --port 8080 &
+          MCP_PID=$!
+          echo "MCP_PID=$MCP_PID" >> $GITHUB_ENV
+
+          # Wait for server to be ready
+          for i in {1..30}; do
+            if curl -s http://localhost:8080/health > /dev/null 2>&1; then
+              echo "MCP server is ready"
+              break
+            fi
+            echo "Waiting for MCP server to start... ($i/30)"
+            sleep 2
+          done
+
+      - name: Run gevals evaluation
+        uses: genmcp/gevals@main
+        with:
+          eval-config: 'evals/claude-code/eval.yaml'
+          gevals-version: 'latest'
+          task-filter: ${{ github.event.inputs.task-filter || '' }}
+          output-format: 'json'
+          verbose: ${{ github.event.inputs.verbose || 'false' }}
+          upload-artifacts: 'true'
+          artifact-name: 'gevals-results'
+          fail-on-error: 'false'
+          task-pass-threshold: '0.8'
+          assertion-pass-threshold: '0.8'
+          working-directory: '.'
+        env:
+          KUBECONFIG: ${{ runner.temp }}/kubeconfig/config
+          # LLM Judge configuration
+          JUDGE_BASE_URL: ${{ secrets.JUDGE_BASE_URL }}
+          JUDGE_API_KEY: ${{ secrets.JUDGE_API_KEY }}
+          JUDGE_MODEL_NAME: ${{ secrets.JUDGE_MODEL_NAME }}
+
+      - name: Stop MCP server
+        if: always()
+        run: |
+          if [ -n "$MCP_PID" ]; then
+            kill $MCP_PID || true
+          fi
+
+      - name: Post results comment on PR
+        if: github.event_name == 'issue_comment' && always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            // Find the results file
+            const resultsPattern = /gevals-.*-out\.json/;
+            const files = fs.readdirSync('.');
+            const resultsFile = files.find(f => resultsPattern.test(f));
+
+            if (!resultsFile) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: ${{ needs.check-trigger.outputs.pr-number }},
+                body: '❌ Gevals evaluation completed but no results file was found.'
+              });
+              return;
+            }
+
+            // Read and parse results
+            const results = JSON.parse(fs.readFileSync(resultsFile, 'utf8'));
+
+            // Calculate summary stats
+            const totalTasks = results.length;
+            const passedTasks = results.filter(r => r.taskPassed && r.allAssertionsPassed).length;
+            const failedTasks = totalTasks - passedTasks;
+
+            // Build comment body
+            let comment = '## 🤖 Gevals MCP Evaluation Results\n\n';
+            comment += `**Summary:** ${passedTasks}/${totalTasks} tasks passed\n\n`;
+
+            if (failedTasks > 0) {
+              comment += '### ❌ Failed Tasks\n\n';
+              results.filter(r => !r.taskPassed || !r.allAssertionsPassed).forEach(task => {
+                comment += `- **${task.taskName}**\n`;
+                comment += `  - Task Passed: ${task.taskPassed ? '✅' : '❌'}\n`;
+                comment += `  - Assertions Passed: ${task.allAssertionsPassed ? '✅' : '❌'}\n`;
+              });
+              comment += '\n';
+            }
+
+            comment += '### ✅ Passed Tasks\n\n';
+            results.filter(r => r.taskPassed && r.allAssertionsPassed).forEach(task => {
+              comment += `- ${task.taskName}\n`;
+            });
+
+            comment += `\n[View full results](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})`;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ needs.check-trigger.outputs.pr-number }},
+              body: comment
+            });
+
+  # Cleanup
+  cleanup:
+    name: Cleanup Kind cluster
+    needs: [setup-cluster, run-evaluation]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete Kind cluster
+        run: |
+          if command -v kind &> /dev/null; then
+            kind delete cluster --name mcp-eval-cluster || true
+          fi
