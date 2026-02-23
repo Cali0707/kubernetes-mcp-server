@@ -103,9 +103,19 @@ type ToolHandlerParams struct {
 	KubernetesClient
 	ToolCallRequest
 	ListOutput output.Output
+	Elicitor
 }
 
 type ToolHandlerFunc func(params ToolHandlerParams) (*ToolCallResult, error)
+
+type Elicitor interface {
+	Elicit(ctx context.Context, message string, requestedSchema *jsonschema.Schema) (*ElicitResult, error)
+}
+
+type ElicitResult struct {
+	Action  string
+	Content map[string]any
+}
 
 type Tool struct {
 	// The name of the tool.
