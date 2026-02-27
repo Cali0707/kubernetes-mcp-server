@@ -6,7 +6,7 @@
 [![GitHub release (latest SemVer)](https://img.shields.io/github/v/release/containers/kubernetes-mcp-server?sort=semver)](https://github.com/containers/kubernetes-mcp-server/releases/latest)
 [![Build](https://github.com/containers/kubernetes-mcp-server/actions/workflows/build.yaml/badge.svg)](https://github.com/containers/kubernetes-mcp-server/actions/workflows/build.yaml)
 
-[✨ Features](#features) | [🚀 Getting Started](#getting-started) | [🎥 Demos](#demos) | [⚙️ Configuration](#configuration) | [🛠️ Tools](#tools-and-functionalities) | [🧑‍💻 Development](#development)
+[✨ Features](#features) | [🚀 Getting Started](#getting-started) | [🎥 Demos](#demos) | [⚙️ Configuration](#configuration) | [🛠️ Tools](#tools-and-functionalities) | [💬 Community](#community) | [🧑‍💻 Development](#development)
 
 https://github.com/user-attachments/assets/be2b67b3-fc1c-4d11-ae46-93deba8ed98e
 
@@ -46,8 +46,9 @@ If you're using the native binaries you don't need to have Node or Python instal
 - **✅ High-Performance / Low-Latency**: Directly interacts with the Kubernetes API server without the overhead of calling and waiting for external commands.
 - **✅ Multi-Cluster**: Can interact with multiple Kubernetes clusters simultaneously (as defined in your kubeconfig files).
 - **✅ Cross-Platform**: Available as a native binary for Linux, macOS, and Windows, as well as an npm package, a Python package, and container/Docker image.
-- **✅ Configurable**: Supports [command-line arguments](#configuration)  to configure the server behavior.
+- **✅ Configurable**: Supports [command-line arguments](#configuration), [TOML configuration files](docs/configuration.md), and environment variables.
 - **✅ Well tested**: The server has an extensive test suite to ensure its reliability and correctness across different Kubernetes environments.
+- **📚 Documentation**: Comprehensive [user documentation](docs/) including setup guides, configuration reference, and observability.
 
 ## 🚀 Getting Started <a id="getting-started"></a>
 
@@ -199,7 +200,9 @@ uvx kubernetes-mcp-server@latest --help
 | `--stateless`             | If set, the MCP server will run in stateless mode, disabling tool and prompt change notifications. This is useful for container deployments, load balancing, and serverless environments where maintaining client state is not desired.                                                       |
 | `--toolsets`              | Comma-separated list of toolsets to enable. Check the [🛠️ Tools and Functionalities](#tools-and-functionalities) section for more information.                                                                                                                                                |
 | `--disable-multi-cluster` | If set, the MCP server will disable multi-cluster support and will only use the current context from the kubeconfig file. This is useful if you want to restrict the MCP server to a single cluster.                                                                                          |
-| `--cluster-provider`.     | Cluster provider strategy to use (one of: kubeconfig, in-cluster, kcp, disabled). If not set, the server will auto-detect based on the environment.                                                                                                                                           |
+| `--cluster-provider`      | Cluster provider strategy to use (one of: kubeconfig, in-cluster, kcp, disabled). If not set, the server will auto-detect based on the environment.                                                                                                                                           |
+
+> **Note**: Most CLI options have equivalent TOML configuration fields. The `--disable-multi-cluster` flag is equivalent to setting `cluster_provider_strategy = "disabled"` in TOML. See the [Configuration Reference](docs/configuration.md) for all TOML options.
 
 ### TOML Configuration Files
 
@@ -216,6 +219,12 @@ log_level = 2
 read_only = true
 toolsets = ["core", "config", "helm", "kubevirt"]
 
+# Deny access to sensitive resources
+[[denied_resources]]
+group = ""
+version = "v1"
+kind = "Secret"
+
 [telemetry]
 endpoint = "http://localhost:4317"
 ```
@@ -224,8 +233,10 @@ For comprehensive TOML configuration documentation, including:
 - All configuration options and their defaults
 - Drop-in configuration files for modular settings
 - Dynamic configuration reload via SIGHUP
+- Denied resources for restricting access to sensitive resource types
 - Server instructions for MCP Tool Search
-- Custom MCP prompts
+- [Custom MCP prompts](docs/prompts.md)
+- [OAuth/OIDC authentication](docs/KEYCLOAK_OIDC_SETUP.md) for HTTP mode
 
 See the **[Configuration Reference](docs/configuration.md)**.
 
@@ -481,6 +492,11 @@ In case multi-cluster support is enabled (default) and you have access to multip
 
 <summary>kubevirt</summary>
 
+- **vm_clone** - Clone a KubeVirt VirtualMachine by creating a VirtualMachineClone resource. This creates a copy of the source VM with a new name using the KubeVirt Clone API
+  - `name` (`string`) **(required)** - The name of the source virtual machine to clone
+  - `namespace` (`string`) **(required)** - The namespace of the source virtual machine
+  - `targetName` (`string`) **(required)** - The name for the new cloned virtual machine
+
 - **vm_create** - Create a VirtualMachine in the cluster with the specified configuration, automatically resolving instance types, preferences, and container disk images. VM will be created in Halted state by default; use autostart parameter to start it immediately.
   - `autostart` (`boolean`) - Optional flag to automatically start the VM after creation (sets runStrategy to Always instead of Halted). Defaults to false.
   - `instancetype` (`string`) - Optional instance type name for the VM (e.g., 'u1.small', 'u1.medium', 'u1.large')
@@ -532,7 +548,19 @@ In case multi-cluster support is enabled (default) and you have access to multip
 
 ## Helm Chart
 
-A [Helm Chart](https://helm.sh) is available to simplify the deployment of the Kubernetes MCP server. Additional details can be found in the [chart README](./charts/kubernetes-mcp-server/README.md).
+A [Helm Chart](https://helm.sh) is available to simplify the deployment of the Kubernetes MCP server.
+
+```shell
+helm install kubernetes-mcp-server oci://ghcr.io/containers/charts/kubernetes-mcp-server
+```
+
+For configuration options including OAuth, telemetry, and resource limits, see the [chart README](./charts/kubernetes-mcp-server/README.md) and [values.yaml](./charts/kubernetes-mcp-server/values.yaml).
+
+## 💬 Community <a id="community"></a>
+
+Join the conversation and connect with other users and contributors:
+
+- [Slack](https://cloud-native.slack.com/archives/C0AHQJVR725) - Ask questions, share feedback, and discuss the Kubernetes MCP server in the `#kubernetes-mcp-server` channel on the CNCF Slack workspace. If you're not already a member, you can [request an invitation](https://slack.cncf.io).
 
 ## 🧑‍💻 Development <a id="development"></a>
 
