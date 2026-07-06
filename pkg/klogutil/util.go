@@ -1,6 +1,8 @@
 package klogutil
 
 import (
+	"context"
+
 	"k8s.io/klog/v2"
 )
 
@@ -12,6 +14,32 @@ type Attr struct {
 	K string
 	V any
 }
+
+// FromContext returns the logger associated with ctx, enriched so that the
+// OpenTelemetry log bridge (otellogr) can extract the active trace span.
+//
+// logr.LogSink.Info/Error have no context.Context parameter, so
+// klog.FromContext(ctx).Info(...) discards the span carried by ctx. Calling
+// WithValues("ctx", ctx) stores the context inside the otellogr sink (via
+// its convertKVs path), which then passes it to Emit — giving the OTel SDK
+// the span context it needs for trace-log correlation.
+//
+// The context is wrapped in otelCtx so that text loggers that don't strip
+// context values (e.g. in tests without the teeSink) produce a harmless
+// placeholder instead of formatting the full context chain, which could
+// contain sensitive data such as HTTP request headers.
+func FromContext(ctx context.Context) klog.Logger {
+	return klog.FromContext(ctx).WithValues("ctx", otelCtx{ctx})
+}
+
+// otelCtx wraps a context.Context so that text formatters produce a fixed
+// placeholder instead of traversing the context chain. It still satisfies
+// context.Context, so otellogr's convertKVs detects it via type assertion
+// and extracts the underlying context for trace-log correlation.
+type otelCtx struct{ context.Context }
+
+func (otelCtx) GoString() string { return "<otel-ctx>" }
+func (otelCtx) String() string   { return "<otel-ctx>" }
 
 // Err returns an Attr carrying the error message under the OpenTelemetry
 // semantic-convention key "exception.message". It centralizes that key so there

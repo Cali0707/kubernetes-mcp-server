@@ -12,10 +12,13 @@ import (
 
 	"github.com/stretchr/testify/suite"
 	"go.opentelemetry.io/otel/log/logtest"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
 	"k8s.io/klog/v2"
 
 	"github.com/containers/kubernetes-mcp-server/internal/test"
 	"github.com/containers/kubernetes-mcp-server/pkg/config"
+	"github.com/containers/kubernetes-mcp-server/pkg/klogutil"
 	"github.com/containers/kubernetes-mcp-server/pkg/logging"
 	"github.com/containers/kubernetes-mcp-server/pkg/telemetry"
 )
@@ -550,6 +553,54 @@ func (s *SinkSuite) TestWithOtelLogSinkBelowVerbosityReachesNeitherSink() {
 	s.Run("OTel recorder does not contain the suppressed log", func() {
 		records := allRecords(recorder.Result())
 		s.Empty(records, "klog gates V(5) at LogLevel=1 before either sink")
+	})
+}
+
+func (s *SinkSuite) TestOtelLogRecordCarriesTraceContext() {
+	recorder := logtest.NewRecorder()
+	otelSink := telemetry.NewLogSink("test-svc", "1.0.0", recorder)
+
+	_, err := logging.New(
+		&config.StaticConfig{LogLevel: 1, LogFile: logging.StderrSentinel},
+		s.httpOut, s.errOut,
+		logging.WithOtelLogSink(otelSink, nil),
+	)
+	s.Require().NoError(err)
+
+	// Create a real TracerProvider and start a span so the context
+	// looks exactly like production: a recording span with valid IDs.
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSampler(sdktrace.AlwaysSample()))
+	s.T().Cleanup(func() { _ = tp.Shutdown(s.T().Context()) })
+	ctx, span := tp.Tracer("test").Start(s.T().Context(), "test-span")
+	defer span.End()
+	expectedSC := span.SpanContext()
+
+	s.Run("Info log record carries trace and span IDs from context", func() {
+		klogutil.FromContext(ctx).V(1).Info("traced-info", "k", "v")
+		klog.Flush()
+
+		records := allRecords(recorder.Result())
+		s.Require().NotEmpty(records, "expected at least one OTel record")
+
+		recordSC := trace.SpanContextFromContext(records[0].Context)
+		s.True(recordSC.HasTraceID(), "OTel log record must carry a trace ID")
+		s.Equal(expectedSC.TraceID(), recordSC.TraceID(), "trace ID must match the span in context")
+		s.Equal(expectedSC.SpanID(), recordSC.SpanID(), "span ID must match the span in context")
+	})
+
+	recorder.Reset()
+
+	s.Run("Error log record carries trace and span IDs from context", func() {
+		klogutil.FromContext(ctx).Error(errSentinel, "traced-error", "code", 42)
+		klog.Flush()
+
+		records := allRecords(recorder.Result())
+		s.Require().NotEmpty(records, "expected at least one OTel record")
+
+		recordSC := trace.SpanContextFromContext(records[0].Context)
+		s.True(recordSC.HasTraceID(), "OTel log record must carry a trace ID")
+		s.Equal(expectedSC.TraceID(), recordSC.TraceID())
+		s.Equal(expectedSC.SpanID(), recordSC.SpanID())
 	})
 }
 

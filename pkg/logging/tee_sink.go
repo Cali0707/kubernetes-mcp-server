@@ -1,6 +1,10 @@
 package logging
 
-import "github.com/go-logr/logr"
+import (
+	"context"
+
+	"github.com/go-logr/logr"
+)
 
 // teeSink forwards log records to two logr.LogSink implementations.
 // The primary sink is the text logger (file/stderr/stdout); the secondary
@@ -41,9 +45,29 @@ func (t *teeSink) Error(err error, msg string, keysAndValues ...any) {
 
 func (t *teeSink) WithValues(keysAndValues ...any) logr.LogSink {
 	return &teeSink{
-		primary:   t.primary.WithValues(keysAndValues...),
+		primary:   t.primary.WithValues(stripContextValues(keysAndValues)...),
 		secondary: t.secondary.WithValues(keysAndValues...),
 	}
+}
+
+// stripContextValues removes context.Context key-value pairs so the text
+// logger never tries to format a context (which produces noisy output like
+// "ctx=context.Background.WithCancel.WithValue(...)"). The secondary sink
+// (otellogr) still receives the unfiltered slice and extracts the context
+// for trace-log correlation.
+func stripContextValues(keysAndValues []any) []any {
+	result := make([]any, 0, len(keysAndValues))
+	for i := 0; i < len(keysAndValues)-1; i += 2 {
+		if _, ok := keysAndValues[i+1].(context.Context); ok {
+			continue
+		}
+		result = append(result, keysAndValues[i], keysAndValues[i+1])
+	}
+	// Preserve a trailing key with no value (odd-length input).
+	if len(keysAndValues)%2 != 0 {
+		result = append(result, keysAndValues[len(keysAndValues)-1])
+	}
+	return result
 }
 
 func (t *teeSink) WithName(name string) logr.LogSink {
