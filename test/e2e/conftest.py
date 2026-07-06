@@ -65,6 +65,18 @@ def server_image():
     return os.environ.get("MCP_SERVER_IMAGE", "localhost/kubernetes-mcp-server:e2e")
 
 
+@pytest.fixture(scope="session")
+def helm_bin():
+    """Path to the helm binary."""
+    return os.environ.get("HELM_BIN", "helm")
+
+
+@pytest.fixture(scope="session")
+def kubectl_bin():
+    """Path to the kubectl binary."""
+    return os.environ.get("KUBECTL_BIN", "kubectl")
+
+
 # ---------------------------------------------------------------------------
 # Server deployment
 # ---------------------------------------------------------------------------
@@ -93,7 +105,7 @@ class ServerDeployment:
 
 
 @pytest_asyncio.fixture
-async def deploy_server(kubeconfig, chart_path, server_image):
+async def deploy_server(kubeconfig, chart_path, server_image, helm_bin, kubectl_bin):
     """Factory fixture for deploying MCP server instances.
 
     Usage::
@@ -116,9 +128,33 @@ async def deploy_server(kubeconfig, chart_path, server_image):
         namespace = await _create_namespace(core_v1, name)
         await _helm_install(
             core_v1, namespace, name, chart_path, server_image, config_toml,
+            helm_bin,
         )
-        server_url, proc = _start_port_forward(namespace, name)
-        await _wait_for_healthz(server_url)
+        server_url, proc = _start_port_forward(namespace, name, kubectl_bin)
+        try:
+            await _wait_for_healthz(server_url)
+        except BaseException as exc:
+            # Capture port-forward stderr before tearing down the process
+            pf_stderr = ""
+            try:
+                proc.terminate()
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            try:
+                stderr_file = proc._stderr_file
+                stderr_file.seek(0)
+                pf_stderr = stderr_file.read().decode(errors="replace")
+                stderr_file.close()
+            except Exception:
+                pass
+            if isinstance(exc, TimeoutError):
+                diag = await _dump_pod_diagnostics(core_v1, namespace, name)
+                raise RuntimeError(
+                    f"Server at {server_url} failed health check.\n"
+                    f"--- port-forward stderr ---\n{pf_stderr}\n{diag}"
+                ) from exc
+            raise
 
         dep = ServerDeployment(name, namespace, server_url)
         dep._port_forward_proc = proc
@@ -129,7 +165,7 @@ async def deploy_server(kubeconfig, chart_path, server_image):
 
     for dep in reversed(deployments):
         subprocess.run(
-            ["helm", "uninstall", dep.name, "--namespace", dep.namespace],
+            [helm_bin, "uninstall", dep.name, "--namespace", dep.namespace],
             capture_output=True,
         )
         if dep._port_forward_proc:
@@ -138,6 +174,9 @@ async def deploy_server(kubeconfig, chart_path, server_image):
                 dep._port_forward_proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 dep._port_forward_proc.kill()
+            stderr_file = getattr(dep._port_forward_proc, "_stderr_file", None)
+            if stderr_file:
+                stderr_file.close()
         try:
             await core_v1.delete_namespace(dep.namespace)
         except Exception:
@@ -188,6 +227,7 @@ async def _helm_install(
     chart_path: str,
     image: str,
     config_toml: str,
+    helm_bin: str,
 ) -> None:
     config = {}
     if config_toml.strip():
@@ -219,7 +259,7 @@ async def _helm_install(
     try:
         result = subprocess.run(
             [
-                "helm", "install", name, chart_path,
+                helm_bin, "install", name, chart_path,
                 "--namespace", namespace,
                 "--values", values_file,
                 "--wait",
@@ -238,19 +278,24 @@ async def _helm_install(
 
 
 def _start_port_forward(
-    namespace: str, name: str
+    namespace: str, name: str, kubectl_bin: str,
 ) -> tuple[str, subprocess.Popen]:
     local_port = _find_free_port()
+    # Redirect stderr to a temp file so it can be read on failure without
+    # risking a buffer-full stall (PIPE on a long-lived process that is never
+    # drained can deadlock once the ~64 KB OS buffer fills).
+    stderr_file = tempfile.TemporaryFile()
     proc = subprocess.Popen(
         [
-            "kubectl", "port-forward",
+            kubectl_bin, "port-forward",
             "-n", namespace,
             f"svc/{name}",
             f"{local_port}:{SERVER_PORT}",
         ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=stderr_file,
     )
+    proc._stderr_file = stderr_file
     return f"http://127.0.0.1:{local_port}", proc
 
 
