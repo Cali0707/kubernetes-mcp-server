@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import os
-import socket
+import re
 import subprocess
 import tempfile
 import time
 import tomllib
 import urllib.error
 import urllib.request
+import warnings
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -203,21 +204,33 @@ async def _create_namespace(core_v1: CoreV1Api, prefix: str) -> str:
 
 
 def _parse_image(image: str) -> tuple[str, str, str]:
-    """Split 'registry/repo:tag' into (registry, repository, version)."""
+    """Split a container image reference into (registry, repository, version).
+
+    Handles ``registry/repo:tag``, ``registry:port/repo:tag``, and
+    ``repo@sha256:digest`` forms.
+    """
     version = "latest"
-    if ":" in image:
-        image, version = image.rsplit(":", 1)
-    if "/" in image:
-        registry, repo = image.split("/", 1)
+    # Digest references (name@algo:hash) take precedence over tag
+    if "@" in image:
+        image, version = image.rsplit("@", 1)
     else:
-        registry, repo = "", image
-    return registry, repo, version
+        # A colon is only a tag separator when it appears in the last path
+        # component.  Colons before the last '/' are registry port numbers
+        # (e.g. localhost:5000/repo).
+        last_slash = image.rfind("/")
+        tag_sep = image.find(":", last_slash + 1)
+        if tag_sep != -1:
+            version = image[tag_sep + 1 :]
+            image = image[:tag_sep]
 
-
-def _find_free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    # The first path component is a registry when it contains '.' or ':'
+    # (port) or equals 'localhost'.
+    if "/" in image:
+        first, rest = image.split("/", 1)
+        if "." in first or ":" in first or first == "localhost":
+            return first, rest, version
+        return "", image, version
+    return "", image, version
 
 
 async def _helm_install(
@@ -235,7 +248,14 @@ async def _helm_install(
     # Remove http section — Helm's toToml converts large integers to scientific
     # notation which the TOML parser rejects.
     # https://github.com/helm/helm/issues/32040
-    config.pop("http", None)
+    if "http" in config:
+        warnings.warn(
+            "The [http] config section is dropped before Helm install due to "
+            "helm/helm#32040 (toToml mangles large integers). "
+            "HTTP settings will use server defaults.",
+            stacklevel=2,
+        )
+        del config["http"]
 
     registry, repo, version = _parse_image(image)
     values = {
@@ -280,22 +300,42 @@ async def _helm_install(
 def _start_port_forward(
     namespace: str, name: str, kubectl_bin: str,
 ) -> tuple[str, subprocess.Popen]:
-    local_port = _find_free_port()
+    # Use ":SERVER_PORT" so kubectl picks a free port *and* binds it
+    # atomically, avoiding the TOCTOU race of finding a port then hoping it
+    # stays free until kubectl binds it.
     # Redirect stderr to a temp file so it can be read on failure without
     # risking a buffer-full stall (PIPE on a long-lived process that is never
     # drained can deadlock once the ~64 KB OS buffer fills).
+    # stdout is PIPE so we can read the "Forwarding from ..." line to learn
+    # the actual local port.  kubectl only writes a couple of lines here, so
+    # the pipe buffer will not fill.
     stderr_file = tempfile.TemporaryFile()
     proc = subprocess.Popen(
         [
             kubectl_bin, "port-forward",
             "-n", namespace,
             f"svc/{name}",
-            f"{local_port}:{SERVER_PORT}",
+            f":{SERVER_PORT}",
         ],
-        stdout=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
         stderr=stderr_file,
     )
     proc._stderr_file = stderr_file
+    # kubectl prints "Forwarding from 127.0.0.1:<port> -> <remote>" once the
+    # local socket is bound.  readline() returns b"" if the process exits
+    # before writing anything.
+    line = proc.stdout.readline()
+    if not line:
+        proc.wait()
+        stderr_file.seek(0)
+        err = stderr_file.read().decode(errors="replace")
+        raise RuntimeError(f"kubectl port-forward exited before binding: {err}")
+    m = re.search(r"127\.0\.0\.1:(\d+)", line.decode())
+    if not m:
+        raise RuntimeError(
+            f"Could not parse local port from kubectl output: {line!r}"
+        )
+    local_port = int(m.group(1))
     return f"http://127.0.0.1:{local_port}", proc
 
 
