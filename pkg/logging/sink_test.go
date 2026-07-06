@@ -1,6 +1,7 @@
 package logging_test
 
 import (
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -10,11 +11,13 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/suite"
+	"go.opentelemetry.io/otel/log/logtest"
 	"k8s.io/klog/v2"
 
 	"github.com/containers/kubernetes-mcp-server/internal/test"
 	"github.com/containers/kubernetes-mcp-server/pkg/config"
 	"github.com/containers/kubernetes-mcp-server/pkg/logging"
+	"github.com/containers/kubernetes-mcp-server/pkg/telemetry"
 )
 
 // SinkSuite tests do not call t.Parallel(): every test mutates klog's global
@@ -458,6 +461,152 @@ func (s *SinkSuite) TestSinkImplementsIoWriter() {
 	content, err := os.ReadFile(pathA)
 	s.Require().NoError(err)
 	s.Contains(string(content), "direct")
+}
+
+func (s *SinkSuite) TestWithOtelLogSinkLogsToTextAndOtel() {
+	// Wire the real NewLogSink through the tee and verify logs land in both
+	// the text sink (file) and the OTel recorder.
+	recorder := logtest.NewRecorder()
+	otelSink := telemetry.NewLogSink("test-svc", "1.0.0", recorder)
+
+	pathA := filepath.Join(s.tempDir, "a.log")
+	sink, err := logging.New(
+		&config.StaticConfig{LogLevel: 1, LogFile: pathA},
+		s.httpOut, s.errOut,
+		logging.WithOtelLogSink(otelSink, nil),
+	)
+	s.Require().NoError(err)
+	s.T().Cleanup(func() { _ = sink.Close() })
+
+	klog.FromContext(s.T().Context()).V(1).Info("hello-both", "k", "v")
+	klog.Flush()
+
+	s.Run("text sink receives the log", func() {
+		content, err := os.ReadFile(pathA)
+		s.Require().NoError(err)
+		s.Contains(string(content), "hello-both")
+	})
+
+	s.Run("OTel recorder receives the log with correct body and attributes", func() {
+		records := allRecords(recorder.Result())
+		s.Require().NotEmpty(records, "expected at least one OTel record")
+		s.Equal("hello-both", records[0].Body.AsString())
+		s.True(hasAttr(records[0], "k", "v"))
+	})
+}
+
+func (s *SinkSuite) TestWithOtelLogSinkErrorLandsInBoth() {
+	recorder := logtest.NewRecorder()
+	otelSink := telemetry.NewLogSink("test-svc", "1.0.0", recorder)
+
+	pathA := filepath.Join(s.tempDir, "a.log")
+	sink, err := logging.New(
+		&config.StaticConfig{LogLevel: 1, LogFile: pathA},
+		s.httpOut, s.errOut,
+		logging.WithOtelLogSink(otelSink, nil),
+	)
+	s.Require().NoError(err)
+	s.T().Cleanup(func() { _ = sink.Close() })
+
+	klog.FromContext(s.T().Context()).Error(errSentinel, "something failed", "code", 42)
+	klog.Flush()
+
+	s.Run("text sink receives the error log", func() {
+		content, err := os.ReadFile(pathA)
+		s.Require().NoError(err)
+		s.Contains(string(content), "something failed")
+	})
+
+	s.Run("OTel recorder receives the error log", func() {
+		records := allRecords(recorder.Result())
+		s.Require().NotEmpty(records)
+		s.Equal("something failed", records[0].Body.AsString())
+	})
+}
+
+func (s *SinkSuite) TestWithOtelLogSinkBelowVerbosityReachesNeitherSink() {
+	// klog's own verbosity gate runs before the teeSink, so V(5) at
+	// LogLevel=1 never reaches either the text sink or the OTel recorder.
+	recorder := logtest.NewRecorder()
+	otelSink := telemetry.NewLogSink("test-svc", "1.0.0", recorder)
+
+	pathA := filepath.Join(s.tempDir, "a.log")
+	sink, err := logging.New(
+		&config.StaticConfig{LogLevel: 1, LogFile: pathA},
+		s.httpOut, s.errOut,
+		logging.WithOtelLogSink(otelSink, nil),
+	)
+	s.Require().NoError(err)
+	s.T().Cleanup(func() { _ = sink.Close() })
+
+	klog.FromContext(s.T().Context()).V(5).Info("too-verbose")
+	klog.Flush()
+
+	s.Run("text sink does not contain the suppressed log", func() {
+		content, _ := os.ReadFile(pathA)
+		s.NotContains(string(content), "too-verbose")
+	})
+
+	s.Run("OTel recorder does not contain the suppressed log", func() {
+		records := allRecords(recorder.Result())
+		s.Empty(records, "klog gates V(5) at LogLevel=1 before either sink")
+	})
+}
+
+func (s *SinkSuite) TestCloseShutdownsOtelProvider() {
+	var shutdownCalled atomic.Bool
+	provider := &fakeLogProvider{onShutdown: func() { shutdownCalled.Store(true) }}
+
+	recorder := logtest.NewRecorder()
+	otelSink := telemetry.NewLogSink("test-svc", "1.0.0", recorder)
+
+	sink, err := logging.New(
+		&config.StaticConfig{LogLevel: 1, LogFile: logging.StderrSentinel},
+		s.httpOut, s.errOut,
+		logging.WithOtelLogSink(otelSink, provider),
+	)
+	s.Require().NoError(err)
+
+	s.Require().NoError(sink.Close())
+	s.True(shutdownCalled.Load(), "Close must call Shutdown on the OTel LogProvider")
+}
+
+// --- OTel test helpers ---------------------------------------------------
+
+var errSentinel = errString("sentinel")
+
+type errString string
+
+func (e errString) Error() string { return string(e) }
+
+// fakeLogProvider satisfies logging.LogProvider and records whether
+// Shutdown was called.
+type fakeLogProvider struct {
+	onShutdown func()
+}
+
+func (f *fakeLogProvider) Shutdown(_ context.Context) error {
+	if f.onShutdown != nil {
+		f.onShutdown()
+	}
+	return nil
+}
+
+func allRecords(recording logtest.Recording) []logtest.Record {
+	var out []logtest.Record
+	for _, recs := range recording {
+		out = append(out, recs...)
+	}
+	return out
+}
+
+func hasAttr(r logtest.Record, key, value string) bool {
+	for _, a := range r.Attributes {
+		if a.Key == key && a.Value.AsString() == value {
+			return true
+		}
+	}
+	return false
 }
 
 func TestSink(t *testing.T) {

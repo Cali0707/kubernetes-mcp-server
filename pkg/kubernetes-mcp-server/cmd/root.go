@@ -141,6 +141,7 @@ func NewMCPServer(streams genericiooptions.IOStreams) *cobra.Command {
 			// Close the log sink whatever happens next: Validate may fail, Run
 			// may panic, the version short-circuit may exit early. The sink is
 			// the only thing that holds an open fd between Complete and now.
+			// Close also flushes the OTel log provider when configured.
 			defer func() {
 				if o.logSink != nil {
 					if err := o.logSink.Close(); err != nil {
@@ -204,7 +205,21 @@ func (m *MCPServerOptions) Complete(ctx context.Context, cmd *cobra.Command) err
 
 	m.loadFlags(cmd)
 
-	sink, err := logging.New(m.StaticConfig, m.Out, m.ErrOut)
+	// Initialize the OTel log provider before wiring klog. This runs before
+	// klog is configured, so it does not use klog internally. If it fails or
+	// telemetry is disabled, otelLogProvider is nil and logging proceeds
+	// text-only.
+	otelLogProvider, _ := telemetry.NewLogProvider(
+		ctx, &m.StaticConfig.Telemetry, version.BinaryName, version.Version,
+	)
+
+	var sinkOpts []logging.Option
+	if otelLogProvider != nil {
+		otelSink := telemetry.NewLogSink(version.BinaryName, version.Version, otelLogProvider)
+		sinkOpts = append(sinkOpts, logging.WithOtelLogSink(otelSink, otelLogProvider))
+	}
+
+	sink, err := logging.New(m.StaticConfig, m.Out, m.ErrOut, sinkOpts...)
 	if err != nil {
 		return err
 	}
