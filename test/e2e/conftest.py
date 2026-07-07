@@ -142,11 +142,13 @@ async def deploy_server(kubeconfig, chart_path, server_image, helm_bin, kubectl_
                 proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 proc.kill()
+                proc.wait()
             try:
                 stderr_file = proc._stderr_file
                 stderr_file.seek(0)
                 pf_stderr = stderr_file.read().decode(errors="replace")
                 stderr_file.close()
+                proc._stdout_file.close()
             except Exception:
                 pass
             if isinstance(exc, TimeoutError):
@@ -175,9 +177,11 @@ async def deploy_server(kubeconfig, chart_path, server_image, helm_bin, kubectl_
                 dep._port_forward_proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 dep._port_forward_proc.kill()
-            stderr_file = getattr(dep._port_forward_proc, "_stderr_file", None)
-            if stderr_file:
-                stderr_file.close()
+                dep._port_forward_proc.wait()
+            for attr in ("_stderr_file", "_stdout_file"):
+                fh = getattr(dep._port_forward_proc, attr, None)
+                if fh:
+                    fh.close()
         try:
             await core_v1.delete_namespace(dep.namespace)
         except Exception:
@@ -303,12 +307,13 @@ def _start_port_forward(
     # Use ":SERVER_PORT" so kubectl picks a free port *and* binds it
     # atomically, avoiding the TOCTOU race of finding a port then hoping it
     # stays free until kubectl binds it.
-    # Redirect stderr to a temp file so it can be read on failure without
-    # risking a buffer-full stall (PIPE on a long-lived process that is never
-    # drained can deadlock once the ~64 KB OS buffer fills).
-    # stdout is PIPE so we can read the "Forwarding from ..." line to learn
-    # the actual local port.  kubectl only writes a couple of lines here, so
-    # the pipe buffer will not fill.
+    #
+    # Both streams go to temp files rather than PIPEs: kubectl is long-lived
+    # and keeps writing to stdout ("Handling connection for <port>" on every
+    # forwarded connection), so an undrained PIPE would deadlock once the
+    # ~64 KB OS buffer fills.  A file never blocks the writer, and we can poll
+    # it for the "Forwarding from" line to learn the port kubectl chose.
+    stdout_file = tempfile.TemporaryFile()
     stderr_file = tempfile.TemporaryFile()
     proc = subprocess.Popen(
         [
@@ -317,26 +322,49 @@ def _start_port_forward(
             f"svc/{name}",
             f":{SERVER_PORT}",
         ],
-        stdout=subprocess.PIPE,
+        stdout=stdout_file,
         stderr=stderr_file,
     )
+    proc._stdout_file = stdout_file
     proc._stderr_file = stderr_file
+
     # kubectl prints "Forwarding from 127.0.0.1:<port> -> <remote>" once the
-    # local socket is bound.  readline() returns b"" if the process exits
-    # before writing anything.
-    line = proc.stdout.readline()
-    if not line:
+    # local socket is bound (on dual-stack hosts a "[::1]:<port>" line follows;
+    # scanning the whole output makes us order-independent).  Poll with a hard
+    # deadline so a kubectl that wedges during setup can't hang the suite.
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        stdout_file.seek(0)
+        output = stdout_file.read().decode(errors="replace")
+        m = re.search(r"Forwarding from 127\.0\.0\.1:(\d+)", output)
+        if m:
+            return f"http://127.0.0.1:{int(m.group(1))}", proc
+        if proc.poll() is not None:
+            break
+        time.sleep(0.1)
+
+    # Failed to learn the port: kubectl exited early or never bound in time.
+    # Re-read once more in case a final flush landed after the last poll.
+    stdout_file.seek(0)
+    out = stdout_file.read().decode(errors="replace")
+    m = re.search(r"Forwarding from 127\.0\.0\.1:(\d+)", out)
+    if m:
+        return f"http://127.0.0.1:{int(m.group(1))}", proc
+    try:
+        proc.terminate()
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
         proc.wait()
-        stderr_file.seek(0)
-        err = stderr_file.read().decode(errors="replace")
-        raise RuntimeError(f"kubectl port-forward exited before binding: {err}")
-    m = re.search(r"127\.0\.0\.1:(\d+)", line.decode())
-    if not m:
-        raise RuntimeError(
-            f"Could not parse local port from kubectl output: {line!r}"
-        )
-    local_port = int(m.group(1))
-    return f"http://127.0.0.1:{local_port}", proc
+    stderr_file.seek(0)
+    err = stderr_file.read().decode(errors="replace")
+    stdout_file.close()
+    stderr_file.close()
+    raise RuntimeError(
+        "kubectl port-forward did not report a local port within 30s "
+        f"(exit code {proc.returncode}).\n"
+        f"--- stdout ---\n{out}\n--- stderr ---\n{err}"
+    )
 
 
 async def _wait_for_healthz(url: str, timeout: float = 30.0) -> None:
