@@ -43,6 +43,14 @@ func (s *LogsSuite) TestNewLogProviderDisabledCases() {
 		s.NoError(err)
 		s.Nil(provider)
 	})
+
+	s.Run("returns nil when OTEL_LOGS_EXPORTER is none", func() {
+		s.T().Setenv("OTEL_LOGS_EXPORTER", "none")
+		cfg := &config.TelemetryConfig{Endpoint: "http://localhost:4317"}
+		provider, err := NewLogProvider(s.T().Context(), cfg, "svc", "1.0")
+		s.NoError(err)
+		s.Nil(provider, "OTEL_LOGS_EXPORTER=none must disable log export even when endpoint is set")
+	})
 }
 
 func (s *LogsSuite) TestNewLogProviderWithValidConfig() {

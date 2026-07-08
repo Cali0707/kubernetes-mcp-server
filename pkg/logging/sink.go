@@ -26,6 +26,7 @@ import (
 	"k8s.io/klog/v2/textlogger"
 
 	"github.com/containers/kubernetes-mcp-server/pkg/config"
+	"github.com/containers/kubernetes-mcp-server/pkg/klogutil"
 )
 
 // StderrSentinel is the magic value users put in log_file to route logs to
@@ -176,8 +177,10 @@ func New(cfg *config.StaticConfig, httpOut, errOut io.Writer, opts ...Option) (*
 			secondary: o.otelSink,
 		}))
 		s.logProvider = o.otelProvider
+		klogutil.SetOtelLogSinkActive(true)
 	} else {
 		klog.SetLoggerWithOptions(textLogger)
+		klogutil.SetOtelLogSinkActive(false)
 	}
 
 	s.sdkLogger = slog.New(logr.ToSlogHandler(klog.Background()))

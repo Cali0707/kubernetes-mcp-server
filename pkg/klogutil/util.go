@@ -2,9 +2,17 @@ package klogutil
 
 import (
 	"context"
+	"sync/atomic"
 
 	"k8s.io/klog/v2"
 )
+
+var otelLogSinkActive atomic.Bool
+
+// SetOtelLogSinkActive records whether the OTel log bridge is active.
+// When false, FromContext skips the WithValues("ctx", …) call, avoiding a
+// per-call allocation and keeping the text log output free of the placeholder.
+func SetOtelLogSinkActive(active bool) { otelLogSinkActive.Store(active) }
 
 // Attr is a single, complete key/value log attribute. Because every constructor
 // returns a complete pair, attributes compose through the variadic logr/klog
@@ -29,7 +37,11 @@ type Attr struct {
 // placeholder instead of formatting the full context chain, which could
 // contain sensitive data such as HTTP request headers.
 func FromContext(ctx context.Context) klog.Logger {
-	return klog.FromContext(ctx).WithValues("ctx", otelCtx{ctx})
+	logger := klog.FromContext(ctx)
+	if !otelLogSinkActive.Load() {
+		return logger
+	}
+	return logger.WithValues("ctx", otelCtx{ctx})
 }
 
 // otelCtx wraps a context.Context so that text formatters produce a fixed

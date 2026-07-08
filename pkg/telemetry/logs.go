@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"context"
+	"os"
 	"strings"
 	"time"
 
@@ -25,6 +26,10 @@ import (
 // klog logger is wired.
 func NewLogProvider(ctx context.Context, cfg *config.TelemetryConfig, serviceName, serviceVersion string) (*sdklog.LoggerProvider, error) {
 	if cfg == nil || !cfg.IsEnabled() {
+		return nil, nil
+	}
+
+	if strings.ToLower(os.Getenv("OTEL_LOGS_EXPORTER")) == "none" {
 		return nil, nil
 	}
 

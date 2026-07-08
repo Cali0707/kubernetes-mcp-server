@@ -209,7 +209,7 @@ func (m *MCPServerOptions) Complete(ctx context.Context, cmd *cobra.Command) err
 	// klog is configured, so it does not use klog internally. If it fails or
 	// telemetry is disabled, otelLogProvider is nil and logging proceeds
 	// text-only.
-	otelLogProvider, _ := telemetry.NewLogProvider(
+	otelLogProvider, otelLogErr := telemetry.NewLogProvider(
 		ctx, &m.StaticConfig.Telemetry, version.BinaryName, version.Version,
 	)
 
@@ -224,6 +224,11 @@ func (m *MCPServerOptions) Complete(ctx context.Context, cmd *cobra.Command) err
 		return err
 	}
 	m.logSink = sink
+
+	// klog is now wired — log the deferred OTel provider error if one occurred.
+	if otelLogErr != nil {
+		klogutil.FromContext(ctx).Error(otelLogErr, "Failed to create OTel log provider, log export disabled")
+	}
 
 	if m.StaticConfig.RequireOAuth && m.StaticConfig.Port == "" {
 		// RequireOAuth is not relevant flow for STDIO transport

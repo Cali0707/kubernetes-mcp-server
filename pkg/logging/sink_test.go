@@ -604,6 +604,50 @@ func (s *SinkSuite) TestOtelLogRecordCarriesTraceContext() {
 	})
 }
 
+func (s *SinkSuite) TestKlogutilFromContextTextIsClean() {
+	s.Run("OTel disabled (default): text log carries no ctx field", func() {
+		path := filepath.Join(s.tempDir, "disabled.log")
+		sink, err := logging.New(&config.StaticConfig{LogLevel: 1, LogFile: path}, s.httpOut, s.errOut)
+		s.Require().NoError(err)
+		s.T().Cleanup(func() { _ = sink.Close() })
+
+		klogutil.FromContext(s.T().Context()).Info("default-line", "k", "v")
+		klog.Flush()
+
+		content, err := os.ReadFile(path)
+		s.Require().NoError(err)
+		s.NotContains(string(content), "otel-ctx", "text log must not carry the correlation context")
+	})
+
+	s.Run("OTel enabled: text log clean, OTel record still correlates", func() {
+		recorder := logtest.NewRecorder()
+		otelSink := telemetry.NewLogSink("svc", "1.0.0", recorder)
+		path := filepath.Join(s.tempDir, "enabled.log")
+		sink, err := logging.New(&config.StaticConfig{LogLevel: 1, LogFile: path}, s.httpOut, s.errOut, logging.WithOtelLogSink(otelSink, nil))
+		s.Require().NoError(err)
+		s.T().Cleanup(func() { _ = sink.Close() })
+
+		tp := sdktrace.NewTracerProvider(sdktrace.WithSampler(sdktrace.AlwaysSample()))
+		s.T().Cleanup(func() { _ = tp.Shutdown(s.T().Context()) })
+		ctx, span := tp.Tracer("test").Start(s.T().Context(), "span")
+		defer span.End()
+
+		klogutil.FromContext(ctx).Info("enabled-line", "k", "v")
+		klog.Flush()
+
+		content, err := os.ReadFile(path)
+		s.Require().NoError(err)
+		s.NotContains(string(content), "otel-ctx", "text log must not carry the correlation context")
+
+		var records []logtest.Record
+		for _, recs := range recorder.Result() {
+			records = append(records, recs...)
+		}
+		s.Require().NotEmpty(records)
+		s.True(trace.SpanContextFromContext(records[0].Context).HasTraceID(), "OTel record must still carry the trace context")
+	})
+}
+
 func (s *SinkSuite) TestCloseShutdownsOtelProvider() {
 	var shutdownCalled atomic.Bool
 	provider := &fakeLogProvider{onShutdown: func() { shutdownCalled.Store(true) }}

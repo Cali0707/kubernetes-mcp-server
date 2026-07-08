@@ -31,7 +31,7 @@ func (t *teeSink) Enabled(level int) bool {
 
 func (t *teeSink) Info(level int, msg string, keysAndValues ...any) {
 	if t.primary.Enabled(level) {
-		t.primary.Info(level, msg, keysAndValues...)
+		t.primary.Info(level, msg, stripContextValues(keysAndValues)...)
 	}
 	if t.secondary.Enabled(level) {
 		t.secondary.Info(level, msg, keysAndValues...)
@@ -39,7 +39,7 @@ func (t *teeSink) Info(level int, msg string, keysAndValues ...any) {
 }
 
 func (t *teeSink) Error(err error, msg string, keysAndValues ...any) {
-	t.primary.Error(err, msg, keysAndValues...)
+	t.primary.Error(err, msg, stripContextValues(keysAndValues)...)
 	t.secondary.Error(err, msg, keysAndValues...)
 }
 
