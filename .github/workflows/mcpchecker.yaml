@@ -159,8 +159,8 @@ jobs:
               }
 
               if (!seenComment) {
-                core.warning('Could not locate the triggering comment in the PR timeline; ' +
-                             'TOCTOU check was skipped');
+                core.setOutput('should-run', 'false');
+                return
               }
 
               if (!lastCommitSha) {
