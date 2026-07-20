@@ -1,8 +1,9 @@
 # Kuadrant MCP Gateway installation and management
 
-# Pinned version — update periodically
+# Pinned versions — update periodically
 MCP_GATEWAY_VERSION ?= 0.7.1
 GATEWAY_API_VERSION ?= v1.3.0
+KUADRANT_ISTIO_VERSION ?= 1.30.1
 
 ##@ Kuadrant MCP Gateway
 
@@ -21,11 +22,11 @@ kuadrant-install-prerequisites: helm ## Install Gateway API CRDs and Istio (prer
 	@$(HELM) repo update
 	@echo ""
 	@echo "Installing Istio base..."
-	@$(HELM) upgrade --install istio-base istio/base -n istio-system --create-namespace --wait
+	@$(HELM) upgrade --install istio-base istio/base -n istio-system --create-namespace --version $(KUADRANT_ISTIO_VERSION) --wait
 	@echo "✅ Istio base installed"
 	@echo ""
 	@echo "Installing Istiod..."
-	@$(HELM) upgrade --install istiod istio/istiod -n istio-system --wait
+	@$(HELM) upgrade --install istiod istio/istiod -n istio-system --version $(KUADRANT_ISTIO_VERSION) --wait
 	@echo "✅ Istiod installed"
 	@echo ""
 	@echo "Creating gateway-system namespace..."
@@ -89,9 +90,6 @@ kuadrant-uninstall: helm ## Uninstall Kuadrant MCP Gateway
 	@$(HELM) uninstall mcp-gateway -n mcp-system --ignore-not-found || true
 	@$(HELM) uninstall istiod -n istio-system --ignore-not-found || true
 	@$(HELM) uninstall istio-base -n istio-system --ignore-not-found || true
-	@kubectl delete namespace mcp-system --ignore-not-found
-	@kubectl delete namespace gateway-system --ignore-not-found
-	@kubectl delete namespace istio-system --ignore-not-found
 	@echo "✅ Kuadrant MCP Gateway uninstalled"
 
 .PHONY: kuadrant-status

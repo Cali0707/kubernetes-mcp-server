@@ -22,6 +22,7 @@ import yaml
 from kubernetes_asyncio import config as k8s_config
 from kubernetes_asyncio.client import (
     ApiClient,
+    ApiException,
     CoreV1Api,
     CustomObjectsApi,
     V1Namespace,
@@ -124,6 +125,8 @@ class GatewayConnection:
         """Connect an MCP client session through the gateway."""
         async with httpx.AsyncClient(
             headers={"Host": self.host},
+            follow_redirects=True,
+            timeout=httpx.Timeout(30.0, read=300.0),
         ) as http_client:
             async with streamable_http_client(
                 f"{self.url}/mcp", http_client=http_client,
@@ -453,7 +456,9 @@ async def kuadrant_gateway(k8s_core_v1, kubectl_bin) -> GatewayConnection:
         await k8s_core_v1.read_namespaced_service(
             name=GATEWAY_SERVICE, namespace=GATEWAY_NAMESPACE,
         )
-    except Exception:
+    except ApiException as exc:
+        if exc.status != 404:
+            raise
         pytest.skip(
             f"Kuadrant MCP Gateway service {GATEWAY_NAMESPACE}/{GATEWAY_SERVICE} "
             f"not found — install with 'make kuadrant-setup'"

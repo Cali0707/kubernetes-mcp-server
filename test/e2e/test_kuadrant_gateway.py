@@ -54,9 +54,13 @@ async def test_kuadrant_gateway_tools(
     deploy_server, k8s_core_v1, k8s_custom_objects, kuadrant_gateway,
 ):
     """Tools should be accessible and callable through the Kuadrant MCP Gateway."""
-    # 1. Deploy the MCP server into the cluster with read-only config and
-    #    RBAC granting cluster-wide read access so tools like namespaces_list
-    #    can query the Kubernetes API.
+    # 1. Deploy the MCP server into the cluster with read-only config,
+    #    RBAC granting cluster-wide read access, and an HTTPRoute to the
+    #    Kuadrant MCP Gateway.  Using the chart's httpRoute template (instead
+    #    of creating the route by hand) gives that template e2e coverage.
+    #    The hostname uses the internal wildcard pattern (*.mcp.local) that
+    #    the gateway's "mcps" listener accepts for broker-to-server hairpin
+    #    routing.
     server = await deploy_server("kuadrant-gw", """
         read_only = true
     """, extra_values={
@@ -86,49 +90,22 @@ async def test_kuadrant_gateway_tools(
                 },
             ],
         },
+        "httpRoute": {
+            "enabled": True,
+            "parentRefs": [{
+                "name": "mcp-gateway",
+                "namespace": "gateway-system",
+            }],
+            "hostnames": ["{{ .Release.Name }}.mcp.local"],
+            "rules": [{
+                "matches": [
+                    {"path": {"type": "PathPrefix", "value": "/"}},
+                ],
+            }],
+        },
     })
 
-    # 2. Create an HTTPRoute from the gateway to the MCP server service.
-    #    The hostname uses the internal wildcard pattern (*.mcp.local) that the
-    #    gateway's "mcps" listener accepts for broker-to-server hairpin routing.
-    await k8s_custom_objects.create_namespaced_custom_object(
-        group="gateway.networking.k8s.io",
-        version="v1",
-        namespace=server.namespace,
-        plural="httproutes",
-        body={
-            "apiVersion": "gateway.networking.k8s.io/v1",
-            "kind": "HTTPRoute",
-            "metadata": {
-                "name": f"{server.name}-route",
-                "namespace": server.namespace,
-            },
-            "spec": {
-                "parentRefs": [
-                    {
-                        "name": "mcp-gateway",
-                        "namespace": "gateway-system",
-                    },
-                ],
-                "hostnames": [f"{server.name}.mcp.local"],
-                "rules": [
-                    {
-                        "matches": [
-                            {"path": {"type": "PathPrefix", "value": "/"}},
-                        ],
-                        "backendRefs": [
-                            {
-                                "name": server.name,
-                                "port": 8080,
-                            },
-                        ],
-                    },
-                ],
-            },
-        },
-    )
-
-    # 3. Create an MCPServerRegistration that registers our MCP server with
+    # 2. Create an MCPServerRegistration that registers our MCP server with
     #    the gateway.  userSpecificList is Enabled so the broker forwards
     #    per-user credentials when listing tools (required for servers that
     #    enforce auth, which we will layer on in a follow-up).
@@ -150,19 +127,19 @@ async def test_kuadrant_gateway_tools(
                 "targetRef": {
                     "group": "gateway.networking.k8s.io",
                     "kind": "HTTPRoute",
-                    "name": f"{server.name}-route",
+                    "name": server.name,
                 },
             },
         },
     )
 
-    # 4. Wait for the registration to become Ready (controller has connected
+    # 3. Wait for the registration to become Ready (controller has connected
     #    the broker to our server and discovered its tools).
     await _wait_for_registration_ready(
         k8s_custom_objects, server.namespace, f"{server.name}-reg",
     )
 
-    # 5. Connect to the MCP Gateway and verify tools.
+    # 4. Connect to the MCP Gateway and verify tools.
     async with kuadrant_gateway.connect_mcp() as session:
         # Verify that tools from our server appear with the prefix.
         result = await session.list_tools()
@@ -173,7 +150,7 @@ async def test_kuadrant_gateway_tools(
             f"got: {tool_names}"
         )
 
-        # 6. Call namespaces_list through the gateway and verify the
+        # 5. Call namespaces_list through the gateway and verify the
         #    response against a direct Kubernetes API call.
         namespaces_tool = f"{TOOL_PREFIX}namespaces_list"
         assert namespaces_tool in tool_names, (
