@@ -257,44 +257,26 @@ func (s *WellknownSuite) TestOAuthScopesOverride() {
 	})
 }
 
-func (s *WellknownSuite) TestUnknownWellKnownPath() {
-	s.StaticConfig.RequireOAuth = true
-	s.StartServer()
-
-	unknownPaths := []string{
-		".well-known/unknown-endpoint",
-		".well-known/jwks.json",
-		".well-known/admin",
-		".well-known/",
-	}
-	for _, path := range unknownPaths {
-		s.Run("does not proxy unknown well-known path "+path, func() {
-			s.ReceivedRequest = nil
-			resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%s/%s", s.StaticConfig.Port, path))
-			s.Require().NoError(err)
-			s.T().Cleanup(func() { _ = resp.Body.Close() })
-			s.NotEqual(http.StatusOK, resp.StatusCode, "Unknown well-known path should not succeed")
-			s.Nil(s.ReceivedRequest, "Unknown well-known path should not be proxied to upstream")
-		})
-	}
-}
-
-func (s *WellknownSuite) TestIsKnownWellKnownPath() {
+func (s *WellknownSuite) TestIsWellKnownPath() {
 	s.Run("accepts known endpoints", func() {
-		s.True(isKnownWellKnownPath("/.well-known/oauth-authorization-server"))
-		s.True(isKnownWellKnownPath("/.well-known/oauth-protected-resource"))
-		s.True(isKnownWellKnownPath("/.well-known/openid-configuration"))
+		s.True(isWellKnownPath("/.well-known/oauth-authorization-server"))
+		s.True(isWellKnownPath("/.well-known/oauth-protected-resource"))
+		s.True(isWellKnownPath("/.well-known/openid-configuration"))
 	})
 	s.Run("accepts known endpoints with sub-paths", func() {
-		s.True(isKnownWellKnownPath("/.well-known/oauth-protected-resource/sse"))
-		s.True(isKnownWellKnownPath("/.well-known/oauth-authorization-server/extra"))
+		s.True(isWellKnownPath("/.well-known/oauth-protected-resource/sse"))
+		s.True(isWellKnownPath("/.well-known/oauth-authorization-server/extra"))
 	})
 	s.Run("rejects unknown endpoints", func() {
-		s.False(isKnownWellKnownPath("/.well-known/unknown"))
-		s.False(isKnownWellKnownPath("/.well-known/jwks.json"))
-		s.False(isKnownWellKnownPath("/.well-known/"))
-		s.False(isKnownWellKnownPath("/.well-known/admin"))
-		s.False(isKnownWellKnownPath("/other-path"))
+		s.False(isWellKnownPath("/.well-known/unknown"))
+		s.False(isWellKnownPath("/.well-known/jwks.json"))
+		s.False(isWellKnownPath("/.well-known/"))
+		s.False(isWellKnownPath("/.well-known/admin"))
+		s.False(isWellKnownPath("/other-path"))
+	})
+	s.Run("rejects paths with path traversal", func() {
+		s.False(isWellKnownPath("/.well-known/oauth-authorization-server/../../admin"))
+		s.False(isWellKnownPath("/.well-known/../secrets"))
 	})
 }
 

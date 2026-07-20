@@ -157,8 +157,8 @@ func (w *WellKnown) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 
 	// Validate that the request targets a known well-known endpoint to prevent
 	// proxying arbitrary paths to the upstream authorization server.
-	if !isKnownWellKnownPath(requestPath) {
-		http.Error(writer, "Unknown well-known endpoint", http.StatusNotFound)
+	if !isWellKnownPath(requestPath) {
+		http.Error(writer, "Not a well-known endpoint", http.StatusNotFound)
 		return
 	}
 
@@ -415,9 +415,13 @@ func copyMap(src map[string]interface{}) map[string]interface{} {
 	return dst
 }
 
-// isKnownWellKnownPath reports whether path matches one of the known
+// isWellKnownPath reports whether path matches one of the known
 // well-known endpoints (exact match or sub-path, e.g. /sse suffix).
-func isKnownWellKnownPath(path string) bool {
+// Paths containing ".." are rejected to prevent path traversal bypasses.
+func isWellKnownPath(path string) bool {
+	if strings.Contains(path, "..") {
+		return false
+	}
 	for _, ep := range WellKnownEndpoints {
 		if path == ep || strings.HasPrefix(path, ep+"/") {
 			return true
